@@ -113,6 +113,85 @@ class TestValidatorCommand(CodemodTest):
         """
         self.assertCodemod(before, after)
 
+    def test_replace_validator_with_values(self) -> None:
+        before = """
+        import typing as t
+
+        from pydantic import BaseModel, validator
+
+
+        class Potato(BaseModel):
+            name_map: t.Dict[str, str]
+            name: str
+
+            @validator("name")
+            def _string_validator(cls, v: t.Any, values: t.Dict[str, t.Any]) -> t.Optional[str]:
+                if v in values["name_map"]:
+                    return values["name_map"][v]
+                return v
+        """
+        after = """
+        import typing as t
+
+        from pydantic import ValidationInfo, field_validator, BaseModel
+
+
+        class Potato(BaseModel):
+            name_map: t.Dict[str, str]
+            name: str
+
+            @field_validator("name")
+            @classmethod
+            def _string_validator(cls, v: t.Any, info: ValidationInfo) -> t.Optional[str]:
+                if v in info.data["name_map"]:
+                    return info.data["name_map"][v]
+                return v
+        """
+
+        self.assertCodemod(before, after)
+
+    def test_comment_on_validator_that_reassigns_values(self) -> None:
+        before = """
+        import typing as t
+
+        from pydantic import BaseModel, validator
+
+
+        class Potato(BaseModel):
+            name_map: t.Dict[str, str]
+            name: str
+
+            @validator("name")
+            def _string_validator(cls, v: t.Any, values: t.Dict[str, t.Any]) -> t.Optional[str]:
+                if "name_map" in values:
+                    values = values["name_map"]
+                if v in values:
+                    return values[v]
+                return v
+        """
+        after = """
+        import typing as t
+
+        from pydantic import BaseModel, validator
+
+
+        class Potato(BaseModel):
+            name_map: t.Dict[str, str]
+            name: str
+
+            # TODO[pydantic]: We couldn't refactor the `validator`, please replace it by `field_validator` manually.
+            # Check https://docs.pydantic.dev/dev-v2/migration/#changes-to-validators for more information.
+            @validator("name")
+            def _string_validator(cls, v: t.Any, values: t.Dict[str, t.Any]) -> t.Optional[str]:
+                if "name_map" in values:
+                    values = values["name_map"]
+                if v in values:
+                    return values[v]
+                return v
+        """
+
+        self.assertCodemod(before, after)
+
     def test_comment_on_validator_with_multiple_params(self) -> None:
         before = """
         import typing as t
