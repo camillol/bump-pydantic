@@ -60,6 +60,11 @@ IMPORT_ROOT_VALIDATOR = m.Module(
 ROOT_VALIDATOR_DECORATOR = m.Decorator(decorator=m.Call(func=m.Name("root_validator")))
 ROOT_VALIDATOR_FUNCTION = m.FunctionDef(decorators=[m.ZeroOrMore(), ROOT_VALIDATOR_DECORATOR, m.ZeroOrMore()])
 
+ASSIGN_TO_VALUES = (
+    m.Assign(targets=[m.AssignTarget(target=m.Name("values"))]) |
+    m.AugAssign(target=m.Name("values"))
+)
+
 
 class ValidatorCodemod(VisitorBasedCodemodCommand):
     def __init__(self, context: CodemodContext) -> None:
@@ -68,6 +73,7 @@ class ValidatorCodemod(VisitorBasedCodemodCommand):
         self._import_pydantic_validator = self._import_pydantic_root_validator = False
         self._already_modified = False
         self._should_add_comment = False
+        self._should_replace_values_param = False
         self._has_comment = False
         self._args: List[cst.Arg] = []
 
@@ -110,8 +116,12 @@ class ValidatorCodemod(VisitorBasedCodemodCommand):
         for line in node.leading_lines:
             if m.matches(line, m.EmptyLine(comment=m.Comment(value=CHECK_LINK_COMMENT))):
                 self._has_comment = True
+        allowed_param_count = 2
+        if any(p.name.value == "values" for p in node.params.params[2:]) and not m.findall(node.body, ASSIGN_TO_VALUES):
+            allowed_param_count += 1
+            self._should_replace_values_param = True
         # We are only able to refactor the `@validator` when the function has only `cls` and `v` as arguments.
-        if len(node.params.params) > 2:
+        if len(node.params.params) > allowed_param_count or node.params.star_kwarg is not None:
             self._should_add_comment = True
 
     @m.leave(ROOT_VALIDATOR_DECORATOR)
@@ -138,9 +148,21 @@ class ValidatorCodemod(VisitorBasedCodemodCommand):
     def leave_validator_func(self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef) -> cst.FunctionDef:
         self._args = []
         self._has_comment = False
+
         if self._should_add_comment:
             self._should_add_comment = False
             return updated_node
+
+        if self._should_replace_values_param:
+            new_params: list[cst.Param] = []
+            for param in updated_node.params.params:
+                if param.name.value == "values":
+                    param = cst.Param(name=cst.Name("info"), annotation=cst.Annotation(annotation=cst.Name("ValidationInfo")))
+                new_params.append(param)
+            AddImportsVisitor.add_needed_import(self.context, "pydantic", "ValidationInfo")
+            new_body = m.replace(updated_node.body, m.Name("values"), cst.Attribute(value=cst.Name(value="info"), attr=cst.Name(value="data")))
+            updated_node = updated_node.with_changes(params=updated_node.params.with_changes(params=new_params), body=new_body)
+            self._should_replace_values_param = False
 
         classmethod_decorator = cst.Decorator(decorator=cst.Name("classmethod"))
         return updated_node.with_changes(decorators=[*updated_node.decorators, classmethod_decorator])
